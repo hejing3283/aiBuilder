@@ -112,43 +112,73 @@ def process_dragon_output(df):
     # Add the leftmost position to the processed dataframe
     processed_df['BP'] = processed_df['GENE'].map(variant_positions)
     
+    # Dynamically find and process burden test results
+    burden_test_cols = [col for col in df.columns if '/burden_test/' in col]
+    print(f"Detected burden test columns: {burden_test_cols}")
+
+    # Group columns by burden type and statistic
+    burden_data = {}
+    for col in burden_test_cols:
+        parts = col.split('/burden_test/')
+        if len(parts) == 2:
+            test_type = parts[0]
+            statistic = parts[1]
+
+            if test_type not in burden_data:
+                burden_data[test_type] = {}
+            burden_data[test_type][statistic] = col
+
+    test_types_found = list(burden_data.keys())
+    print(f"Identified test types: {test_types_found}")
+
     # Process different burden test results
-    test_types = ['deleterious_coding', 'ptv', 'missense_prioritized', 'synonymous']
-    
-    # Initialize columns for each test type
-    for test_type in test_types:
+    # test_types = ['deleterious_coding', 'ptv', 'missense_prioritized', 'synonymous'] # Removed hardcoded list
+
+    # Initialize columns for each test type based on dynamically found test types
+    for test_type in test_types_found:
+        print(f"\nProcessing detected test type: {test_type}:")
         # P-value
-        pval_col = f'{test_type}/burden_test/pvalue'
-        if pval_col in df.columns:
+        pval_col_raw = burden_data[test_type].get('pvalue')
+        if pval_col_raw and pval_col_raw in df.columns:
+            # Store raw p-values
+            processed_df[f'{test_type}_raw_pval'] = df[pval_col_raw].fillna(1)
             # Convert p-values to -log10 scale for plotting
-            processed_df[f'{test_type}_pval'] = -np.log10(df[pval_col].fillna(1))
-            # Store raw p-values for display
-            processed_df[f'{test_type}_raw_pval'] = df[pval_col].fillna(1)
-        
+            processed_df[f'{test_type}_pval'] = -np.log10(df[pval_col_raw].fillna(1))
+            print(f"  - Processed p-value for {test_type}")
+        else:
+            print(f"  - P-value column not found or invalid for {test_type}")
+
         # Effect size (beta)
-        beta_col = f'{test_type}/burden_test/beta'
-        if beta_col in df.columns:
-            processed_df[f'{test_type}_beta'] = df[beta_col].fillna(0)
-        
+        beta_col_raw = burden_data[test_type].get('beta')
+        if beta_col_raw and beta_col_raw in df.columns:
+            processed_df[f'{test_type}_beta'] = df[beta_col_raw].fillna(0)
+            print(f"  - Processed beta for {test_type}")
+
         # FDR
-        fdr_col = f'{test_type}/burden_test/fdr'
-        if fdr_col in df.columns:
-            processed_df[f'{test_type}_fdr'] = df[fdr_col].fillna(1)
-        
+        fdr_col_raw = burden_data[test_type].get('fdr')
+        if fdr_col_raw and fdr_col_raw in df.columns:
+            processed_df[f'{test_type}_fdr'] = df[fdr_col_raw].fillna(1)
+            print(f"  - Processed FDR for {test_type}")
+
         # Number of carriers
-        carriers_col = f'{test_type}/burden_test/n_carriers'
-        if carriers_col in df.columns:
-            processed_df[f'{test_type}_carriers'] = df[carriers_col].fillna(0)
-        
+        carriers_col_raw = burden_data[test_type].get('n_carriers')
+        if carriers_col_raw and carriers_col_raw in df.columns:
+            processed_df[f'{test_type}_carriers'] = df[carriers_col_raw].fillna(0)
+            print(f"  - Processed n_carriers for {test_type}")
+
         # Number of variants
-        variants_col = f'{test_type}/burden_test/n_variants'
-        if variants_col in df.columns:
-            processed_df[f'{test_type}_variants'] = df[variants_col].fillna(0)
-        
+        variants_col_raw = burden_data[test_type].get('n_variants')
+        if variants_col_raw and variants_col_raw in df.columns:
+            processed_df[f'{test_type}_variants'] = df[variants_col_raw].fillna(0)
+            print(f"  - Processed n_variants for {test_type}")
+
         # Add variant IDs
-        variant_ids_col = f'{test_type}/burden_test/variant_ids'
-        if variant_ids_col in df.columns:
-            processed_df[f'{test_type}_variant_ids'] = df[variant_ids_col].fillna('')
+        variant_ids_col_raw = burden_data[test_type].get('variant_ids')
+        if variant_ids_col_raw and variant_ids_col_raw in df.columns:
+            processed_df[f'{test_type}_variant_ids'] = df[variant_ids_col_raw].fillna('')
+            print(f"  - Processed variant_ids for {test_type}")
+
+    print("\nFinal Processed DataFrame columns:", processed_df.columns.tolist())
     
     # Ensure all required columns exist and have valid data
     required_columns = ['GENE', 'CHR', 'BP']
@@ -164,7 +194,169 @@ def process_dragon_output(df):
             elif col == 'GENE':
                 processed_df[col] = processed_df[col].fillna('Unknown')
     
+    print("--- Finished process_dragon_output ---")
     return processed_df
+
+def create_intermediate_data(processed_df):
+    """Create an intermediate data format by melting and pivoting."""
+    print("\n=== Starting create_intermediate_data (Melting/Pivoting) ===")
+    print("Input DataFrame shape:", processed_df.shape)
+    print("Input DataFrame columns:", processed_df.columns.tolist())
+
+    if processed_df.empty:
+        print("Processed DataFrame is empty, returning empty intermediate data.")
+        return pd.DataFrame()
+
+    # Columns that describe the gene, not the burden test result, to keep as ID variables
+    id_vars = ['GENE', 'CHR', 'BP', 'phenotype']
+
+    # Collect all burden test related columns and their types
+    # These are the columns that will be melted
+    burden_stat_suffixes = [
+        '_raw_pval', '_pval', '_beta', '_fdr', 
+        '_carriers', '_variants', '_variant_ids'
+    ]
+    
+    # Dynamically find columns to melt
+    cols_to_melt = []
+    for col in processed_df.columns:
+        for suffix in burden_stat_suffixes:
+            if col.endswith(suffix):
+                cols_to_melt.append(col)
+                break 
+
+    if not cols_to_melt:
+        print("No burden test specific columns found for melting.")
+        return pd.DataFrame()
+
+    # Ensure all id_vars exist in processed_df
+    for col in id_vars:
+        if col not in processed_df.columns:
+            print(f"Error: Required ID column '{col}' missing from processed_df.")
+            return pd.DataFrame()
+
+    # Melt the DataFrame
+    print(f"Columns to melt: {cols_to_melt}")
+    melted_df = processed_df.melt(id_vars=id_vars, value_vars=cols_to_melt, var_name='original_column', value_name='value')
+    print("Melted DataFrame shape:", melted_df.shape)
+
+    # Extract TEST_TYPE and statistic type from 'original_column'
+    def parse_original_column(col_name):
+        for suffix in burden_stat_suffixes:
+            if col_name.endswith(suffix):
+                test_type = col_name[:-len(suffix)]
+                statistic_type = suffix[1:] # remove leading underscore
+                return test_type, statistic_type
+        return None, None
+
+    melted_df[['TEST_TYPE', 'statistic']] = melted_df['original_column'].apply(lambda x: pd.Series(parse_original_column(x)))
+    
+    # Drop rows where parsing failed or value is NaN (important for pivot)
+    melted_df.dropna(subset=['TEST_TYPE', 'statistic'], inplace=True)
+    melted_df['value'] = pd.to_numeric(melted_df['value'], errors='coerce') # Ensure value is numeric
+    melted_df.dropna(subset=['value'], inplace=True) # Drop rows where value conversion failed
+
+    print("Melted DataFrame with TEST_TYPE and statistic columns head:\n", melted_df.head())
+
+    # Pivot the DataFrame to get statistics as columns
+    pivot_index = ['GENE', 'CHR', 'BP', 'phenotype', 'TEST_TYPE']
+    
+    # Ensure all pivot_index columns are available in melted_df
+    for col in pivot_index:
+        if col not in melted_df.columns:
+            print(f"Error: Column {col} missing in melted_df for pivoting index.")
+            return pd.DataFrame() 
+    
+    # Pivot table
+    final_data_long = melted_df.pivot_table(index=pivot_index, columns='statistic', values='value', aggfunc='first').reset_index()
+    
+    # Rename columns to desired format
+    final_data_long.rename(columns={
+        'raw_pval': 'p_value',
+        'beta': 'effect_size',
+        'fdr': 'fdr',
+        'carriers': 'test_specific_carriers',
+        'variants': 'test_specific_variants',
+        'variant_ids': 'test_specific_variant_ids',
+        'pval': 'log10_p_value' # The -log10 transformed p-value
+    }, inplace=True)
+    
+    # --- Calculate gene_common_info and merge ---    
+    # Create a dictionary of common gene information from the original processed_df
+    common_info_agg = processed_df.groupby('GENE').agg(
+        chromosome=('CHR', 'first'), # Take first chromosome for gene
+        position=('BP', 'first'),    # Take first BP for gene
+        phenotype=('phenotype', 'first') # Take first phenotype for gene
+    ).reset_index()
+
+    # Initialize all_variant_ids and total_carriers
+    common_info_agg['all_variant_ids'] = ''
+    common_info_agg['total_carriers'] = 0
+    common_info_agg['total_variants'] = 0
+
+    # Collect all variant IDs and carriers across test types for each gene
+    for idx, gene_row in common_info_agg.iterrows():
+        gene = gene_row['GENE']
+        original_gene_rows = processed_df[processed_df['GENE'] == gene]
+        
+        all_variants_for_gene = set()
+        all_carriers_for_gene = set()
+
+        # Iterate through the dynamically found test types
+        test_types_in_processed_df = [col.split('/')[0] for col in processed_df.columns if '/burden_test/pvalue' in col]
+        for tt in test_types_in_processed_df:
+            variant_ids_col = f'{tt}_variant_ids'
+            carriers_col = f'{tt}_carriers'
+            
+            if variant_ids_col in original_gene_rows.columns:
+                for var_ids_str in original_gene_rows[variant_ids_col].dropna().astype(str):
+                    all_variants_for_gene.update(var_ids_str.split(','))
+            
+            if carriers_col in original_gene_rows.columns:
+                for num_carriers in original_gene_rows[carriers_col].dropna():
+                    all_carriers_for_gene.add(num_carriers)
+        
+        common_info_agg.loc[idx, 'total_variants'] = len(all_variants_for_gene)
+        common_info_agg.loc[idx, 'total_carriers'] = max(all_carriers_for_gene) if all_carriers_for_gene else 0
+        common_info_agg.loc[idx, 'all_variant_ids'] = ','.join(sorted(all_variants_for_gene)) if all_variants_for_gene else ''
+
+    # Merge common gene info back into the long format DataFrame
+    final_data_long = pd.merge(final_data_long, common_info_agg[['GENE', 'total_variants', 'total_carriers', 'all_variant_ids']], on='GENE', how='left')
+
+    # Rename 'GENE' to 'gene', 'CHR' to 'chromosome', 'BP' to 'position' for consistency
+    final_data_long.rename(columns={'GENE': 'gene', 'CHR': 'chromosome', 'BP': 'position'}, inplace=True)
+
+
+    print("\nFinal data columns (long format):", final_data_long.columns.tolist())
+    print("Final data shape (long format):", final_data_long.shape)
+    
+    # Sort by gene and test type
+    final_data_long = final_data_long.sort_values(['gene', 'TEST_TYPE'])
+    
+    # Reorder columns for better readability
+    column_order = [
+        'gene', 'chromosome', 'position', 'phenotype', 'TEST_TYPE',
+        'p_value', 'log10_p_value', 'effect_size', 'fdr', 
+        'total_variants', 'total_carriers', 'all_variant_ids',
+        'test_specific_carriers', 'test_specific_variants', 'test_specific_variant_ids'
+    ]
+    
+    # Ensure all columns in column_order exist before reordering
+    existing_columns = [col for col in column_order if col in final_data_long.columns]
+    final_data_long = final_data_long[existing_columns]
+
+    # Save intermediate data to file for inspection
+    try:
+        output_path = os.path.join(os.path.dirname(__file__), 'intermediate_data_long_format.csv')
+        final_data_long.to_csv(output_path, index=False)
+        print(f"\nSaved intermediate data (long format) to: {output_path}")
+        print("First few rows of the saved long format data:\n", final_data_long.head())
+    except Exception as e:
+        print(f"\nError saving intermediate data (long format): {str(e)}")
+        print("Current working directory:", os.getcwd())
+
+    print("=== Finished create_intermediate_data ===")
+    return final_data_long
 
 # Layout
 app.layout = html.Div([
@@ -206,6 +398,23 @@ app.layout = html.Div([
     
     # File info display
     html.Div(id='file-info', style={'margin': '10px', 'textAlign': 'center'}),
+    
+    # Reformat button
+    html.Div([
+        html.Button(
+            "Reformat Data",
+            id="btn-reformat",
+            style={
+                'margin': '10px',
+                'padding': '10px 20px',
+                'backgroundColor': '#FFC107',
+                'color': 'white',
+                'border': 'none',
+                'borderRadius': '5px',
+                'cursor': 'pointer'
+            }
+        )
+    ], style={'textAlign': 'center'}),
     
     # Test type selector
     html.Div([
@@ -323,10 +532,11 @@ app.index_string = '''
      Input('threshold-slider', 'value'),
      Input('point-size-slider', 'value'),
      Input('test-type-dropdown', 'value'),
-     Input('clicked-points', 'data')],
+     Input('clicked-points', 'data'),
+     Input('btn-reformat', 'n_clicks')],
     [State('upload-data', 'filename')]
 )
-def update_plot(contents, threshold, point_size, test_type, clicked_points, filename):
+def update_plot(contents, threshold, point_size, test_type, clicked_points, n_clicks, filename):
     if contents is None:
         return None, html.Div("Please upload a DRAGON output file"), "", ""
     
@@ -342,46 +552,32 @@ def update_plot(contents, threshold, point_size, test_type, clicked_points, file
         if processed_df.empty:
             return None, html.Div("No valid data after processing"), "", "Error: No valid data"
         
-        # Verify we have the required test type data
-        required_cols = [f'{test_type}_pval', f'{test_type}_beta', f'{test_type}_fdr']
-        missing_cols = [col for col in required_cols if col not in processed_df.columns]
-        if missing_cols:
-            return None, html.Div(f"Missing required columns for {test_type}: {', '.join(missing_cols)}"), "", "Error: Missing columns"
+        # Create intermediate long format
+        intermediate_df = create_intermediate_data(processed_df)
+        if intermediate_df.empty:
+            return None, html.Div("No valid data in intermediate format"), "", "Error: No valid data"
         
         status = "Creating plot..."
         
         # Create file info message
-        phenotype = processed_df['phenotype'].iloc[0] if 'phenotype' in processed_df.columns else 'N/A'
+        phenotype = intermediate_df['phenotype'].iloc[0] if 'phenotype' in intermediate_df.columns and not intermediate_df['phenotype'].empty else 'N/A'
+        num_genes = intermediate_df['gene'].nunique() if 'gene' in intermediate_df.columns else 0
+        num_tests = len(intermediate_df)
+        num_chroms = intermediate_df['chromosome'].nunique() if 'chromosome' in intermediate_df.columns else 0
+
         file_info = html.Div([
             f"File: {filename} | ",
-            f"Genes: {len(processed_df):,} | ",
-            f"Chromosomes: {processed_df['CHR'].nunique()} | ",
+            f"Genes: {num_genes:,} | ",
+            f"Tests: {num_tests:,} | ",
+            f"Chromosomes: {num_chroms} | ",
             f"Phenotype: {phenotype}"
         ])
         
-        # Prepare data for Manhattan plot
-        plot_data = {
-            'CHR': processed_df['CHR'].values,
-            'BP': processed_df['BP'].values,
-            'P': processed_df[f'{test_type}_pval'].values,  # Use the selected test type's p-value
-            'GENE': processed_df['GENE'].values,
-            'SNP': processed_df['GENE'].values,
-            'BETA': processed_df[f'{test_type}_beta'].values,
-            'FDR': processed_df[f'{test_type}_fdr'].values,
-            'CARRIERS': processed_df[f'{test_type}_carriers'].values,
-            'VARIANTS': processed_df[f'{test_type}_variants'].values
-        }
-        
-        # Create plot dataframe
-        plot_df = pd.DataFrame(plot_data)
-        
-        # Remove any rows with missing or invalid data
-        plot_df = plot_df.dropna(subset=['CHR', 'BP', 'P'])
+        # Filter data for selected test type (already in long format)
+        plot_df = intermediate_df[intermediate_df['TEST_TYPE'] == test_type].copy()
         
         if plot_df.empty:
-            return None, html.Div("No valid data points for plotting"), file_info, "Error: No valid data points"
-        
-        status = "Finalizing plot..."
+            return None, html.Div(f"No data available for {test_type}"), file_info, "Error: No data for selected test type"
         
         # Create Manhattan plot using Plotly
         manhattan_plot = go.Figure()
@@ -389,46 +585,64 @@ def update_plot(contents, threshold, point_size, test_type, clicked_points, file
         # Calculate cumulative positions for each chromosome
         chrom_positions = {}
         cumulative_pos = 0
-        for chrom in sorted(plot_df['CHR'].unique()):
+        for chrom in sorted(plot_df['chromosome'].unique()):
+            chrom_max_pos = plot_df[plot_df['chromosome'] == chrom]['position'].max()
+            if pd.isna(chrom_max_pos):
+                chrom_max_pos = 0
             chrom_positions[chrom] = cumulative_pos
-            cumulative_pos += plot_df[plot_df['CHR'] == chrom]['BP'].max()
-        
+            cumulative_pos += chrom_max_pos 
+            if chrom_max_pos > 0:
+                cumulative_pos += 1e7 # A reasonable gap, adjust as needed
+
         # Add points for each chromosome
-        for chrom in sorted(plot_df['CHR'].unique()):
-            chrom_data = plot_df[plot_df['CHR'] == chrom]
+        for chrom in sorted(plot_df['chromosome'].unique()):
+            chrom_data = plot_df[plot_df['chromosome'] == chrom].copy()
             # Add chromosome offset to positions
-            x_positions = chrom_data['BP'] + chrom_positions[chrom]
+            chrom_offset = chrom_positions.get(chrom, 0)
+            x_positions = chrom_data['position'] + chrom_offset
             
-            # Create hover template dynamically based on available data
+            # Use log10_p_value for y-axis
+            y_values = chrom_data['log10_p_value']
+            
+            # Create customdata for hover template
+            custom_data = np.column_stack((
+                chrom_data['p_value'],             # 0: raw p-value
+                chrom_data['effect_size'],         # 1: effect_size
+                chrom_data['fdr'],                 # 2: fdr
+                chrom_data['total_variants'],      # 3: total_variants (gene-level)
+                chrom_data['total_carriers'],      # 4: total_carriers (gene-level)
+                chrom_data['test_specific_variants'], # 5: test_specific_variants
+                chrom_data['test_specific_carriers'], # 6: test_specific_carriers
+                chrom_data['chromosome'],           # 7: chromosome
+                chrom_data['position'],             # 8: position
+                chrom_data['phenotype']             # 9: phenotype
+            ))
+
+            # Create hover template - uses columns from the long format df
             hover_template = (
                 "<b>Gene:</b> %{text}<br>" +
-                "<b>Chromosome:</b> " + str(chrom) + "<br>" +
-                "<b>Position:</b> %{x:,.0f}<br>" +
-                "<b>Phenotype:</b> " + str(chrom_data.get('phenotype', 'N/A')) + "<br>"
+                "<b>Test Type:</b> " + test_type.replace('_', ' ').title() + "<br>" +
+                "<b>Chromosome:</b> %{customdata[7]}<br>" +
+                "<b>Position:</b> %{customdata[8]:,.0f}<br>" +
+                "<b>Phenotype:</b> %{customdata[9]}<br>" +
+                "<b>P-value:</b> %{customdata[0]:.2e}<br>" +
+                "<b>Effect Size:</b> %{customdata[1]:.3f}<br>" +
+                "<b>FDR:</b> %{customdata[2]:.2e}<br>" +
+                "<b>Total Variants (Gene):</b> %{customdata[3]:,}<br>" +
+                "<b>Total Carriers (Gene):</b> %{customdata[4]:,}<br>" +
+                "<b>Test-specific Variants:</b> %{customdata[5]:,}<br>" +
+                "<b>Test-specific Carriers:</b> %{customdata[6]:,}<br>" +
+                "<extra></extra>"
             )
-            
-            # Add test information only if p-values exist
-            test_types = ['deleterious_coding', 'ptv', 'missense_prioritized', 'synonymous']
-            for test_type in test_types:
-                pval_col = f'{test_type}_raw_pval'
-                if pval_col in processed_df.columns and not processed_df[pval_col].isna().all():
-                    hover_template += (
-                        f"<br><b>{test_type.replace('_', ' ').title()}:</b><br>" +
-                        "P-value: " + f"{processed_df.loc[chrom_data.index, pval_col].iloc[0]:.2e}<br>" +
-                        "Effect Size: " + f"{processed_df.loc[chrom_data.index, f'{test_type}_beta'].iloc[0]:.3f}<br>" +
-                        "Carriers: " + f"{processed_df.loc[chrom_data.index, f'{test_type}_carriers'].iloc[0]:,}<br>" +
-                        "Variants: " + f"{processed_df.loc[chrom_data.index, f'{test_type}_variants'].iloc[0]:,}<br>"
-                    )
-            
-            hover_template += "<extra></extra>"
             
             # Add main scatter plot
             manhattan_plot.add_trace(go.Scatter(
                 x=x_positions,
-                y=chrom_data['P'],
+                y=y_values, 
                 mode='markers',
                 name=f'Chr{chrom}',
-                text=chrom_data['GENE'],
+                text=chrom_data['gene'],
+                customdata=custom_data,
                 marker=dict(
                     size=point_size,
                     color='skyblue' if chrom % 2 == 0 else 'royalblue'
@@ -436,35 +650,35 @@ def update_plot(contents, threshold, point_size, test_type, clicked_points, file
                 hovertemplate=hover_template
             ))
             
-            # Add labels for significant points (without hover)
-            significant_points = chrom_data[chrom_data['P'] >= threshold]
+            # Add labels for significant points
+            significant_points = chrom_data[chrom_data['log10_p_value'] >= threshold].copy()
             if not significant_points.empty:
                 manhattan_plot.add_trace(go.Scatter(
-                    x=significant_points['BP'] + chrom_positions[chrom],
-                    y=significant_points['P'],
+                    x=significant_points['position'] + chrom_offset,
+                    y=significant_points['log10_p_value'],
                     mode='markers+text',
-                    text=significant_points['GENE'],
+                    text=significant_points['gene'],
                     textposition="top center",
                     textfont=dict(size=10),
                     marker=dict(size=0),
                     showlegend=False,
-                    hoverinfo='skip'  # Skip hover for label points
+                    hoverinfo='skip'
                 ))
             
-            # Add labels for clicked points (without hover)
+            # Add labels for clicked points
             if clicked_points:
-                clicked_data = chrom_data[chrom_data['GENE'].isin(clicked_points)]
+                clicked_data = chrom_data[chrom_data['gene'].isin(clicked_points)].copy()
                 if not clicked_data.empty:
                     manhattan_plot.add_trace(go.Scatter(
-                        x=clicked_data['BP'] + chrom_positions[chrom],
-                        y=clicked_data['P'],
+                        x=clicked_data['position'] + chrom_offset,
+                        y=clicked_data['log10_p_value'],
                         mode='markers+text',
-                        text=clicked_data['GENE'],
+                        text=clicked_data['gene'],
                         textposition="top center",
                         textfont=dict(size=10),
                         marker=dict(size=0),
                         showlegend=False,
-                        hoverinfo='skip'  # Skip hover for label points
+                        hoverinfo='skip'
                     ))
         
         # Add significance lines
@@ -479,7 +693,7 @@ def update_plot(contents, threshold, point_size, test_type, clicked_points, file
             line_color="blue"
         )
         
-        # Update layout with chromosome labels
+        # Update layout
         manhattan_plot.update_layout(
             title=f"Manhattan Plot - {test_type.replace('_', ' ').title()} Burden Test",
             xaxis_title="Genomic Position",
@@ -510,10 +724,13 @@ def update_plot(contents, threshold, point_size, test_type, clicked_points, file
         # Add chromosome labels
         x_ticks = []
         x_labels = []
-        for chrom in sorted(plot_df['CHR'].unique()):
+        unique_chroms_in_plot_df = sorted(plot_df['chromosome'].unique())
+        for chrom in unique_chroms_in_plot_df:
             if chrom in chrom_positions:
-                x_ticks.append(chrom_positions[chrom] + plot_df[plot_df['CHR'] == chrom]['BP'].mean())
-                x_labels.append(str(chrom))
+                chrom_data_for_mean = plot_df[plot_df['chromosome'] == chrom]['position']
+                if not chrom_data_for_mean.empty:
+                    x_ticks.append(chrom_positions[chrom] + chrom_data_for_mean.mean())
+                    x_labels.append(str(chrom))
         
         manhattan_plot.update_xaxes(
             ticktext=x_labels,
@@ -521,7 +738,7 @@ def update_plot(contents, threshold, point_size, test_type, clicked_points, file
             tickangle=0
         )
         
-        return processed_df.to_dict('records'), html.Div([
+        return intermediate_df.to_dict('records'), html.Div([
             dcc.Graph(
                 figure=manhattan_plot,
                 id='manhattan-graph',
@@ -555,10 +772,11 @@ def update_annotation_panel(hover_data, processed_data, test_type):
         if not gene_name:
             return html.Div()
         
-        # Find matching gene data
+        # The processed_data is now the intermediate long format
+        # Filter by gene and TEST_TYPE to get the specific row
         gene_data = None
         for item in processed_data:
-            if item.get('GENE') == gene_name:
+            if item.get('gene') == gene_name and item.get('TEST_TYPE') == test_type:
                 gene_data = item
                 break
                 
@@ -569,36 +787,41 @@ def update_annotation_panel(hover_data, processed_data, test_type):
         annotation_content = [
             html.H4("Gene Details"),
             html.Div([
-                html.Strong("Gene: "), html.Span(str(gene_data.get('GENE', 'N/A'))),
+                html.Strong("Gene: "), html.Span(str(gene_data.get('gene', 'N/A'))),
                 html.Br(),
-                html.Strong("Chromosome: "), html.Span(str(gene_data.get('CHR', 'N/A'))),
+                html.Strong("Chromosome: "), html.Span(str(gene_data.get('chromosome', 'N/A'))),
                 html.Br(),
-                html.Strong("Leftmost Position: "), html.Span(str(gene_data.get('BP', 'N/A'))),
+                html.Strong("Position: "), html.Span(str(gene_data.get('position', 'N/A'))),
                 html.Br(),
                 html.Strong(f"{test_type.replace('_', ' ').title()} Burden Test:"),
                 html.Br(),
                 html.Strong("P-value: "), 
-                html.Span(f"{10**(-gene_data.get(f'{test_type}_pval', 0)):.2e}"),
+                html.Span(f"{gene_data.get('p_value', 0):.2e}"), 
                 html.Br(),
                 html.Strong("Effect Size: "), 
-                html.Span(f"{gene_data.get(f'{test_type}_beta', 0):.3f}"),
+                html.Span(f"{gene_data.get('effect_size', 0):.3f}"),
                 html.Br(),
                 html.Strong("FDR: "), 
-                html.Span(f"{gene_data.get(f'{test_type}_fdr', 1):.2e}"),
+                html.Span(f"{gene_data.get('fdr', 1):.2e}"),
                 html.Br(),
-                html.Strong("Number of Carriers: "), 
-                html.Span(str(gene_data.get(f'{test_type}_carriers', 0))),
+                html.Strong("Total Variants (Gene): "), 
+                html.Span(str(gene_data.get('total_variants', 0))),
                 html.Br(),
-                html.Strong("Number of Variants: "), 
-                html.Span(str(gene_data.get(f'{test_type}_variants', 0)))
+                html.Strong("Total Carriers (Gene): "), 
+                html.Span(str(gene_data.get('total_carriers', 0))),
+                html.Br(),
+                html.Strong("Test-specific Variants: "), 
+                html.Span(str(gene_data.get('test_specific_variants', 0))),
+                html.Br(),
+                html.Strong("Test-specific Carriers: "), 
+                html.Span(str(gene_data.get('test_specific_carriers', 0)))
             ])
         ]
         
         # Add variant IDs if available
-        variant_ids_key = f'{test_type}_variant_ids'
-        if variant_ids_key in gene_data and gene_data[variant_ids_key]:
+        if gene_data.get('test_specific_variant_ids'):
             try:
-                variant_ids = str(gene_data[variant_ids_key]).split(',')
+                variant_ids = str(gene_data['test_specific_variant_ids']).split(',')
                 variant_list = []
                 for var_id in variant_ids:
                     try:
@@ -617,10 +840,10 @@ def update_annotation_panel(hover_data, processed_data, test_type):
                         ], style={'marginLeft': '20px'})
                     ]))
             except Exception as e:
-                print(f"Error processing variants: {str(e)}")
+                print(f"Error processing variants in annotation panel: {str(e)}")
         
         # Add phenotype information if available
-        if 'phenotype' in gene_data and gene_data['phenotype']:
+        if gene_data.get('phenotype'):
             annotation_content.append(html.Div([
                 html.Br(),
                 html.Strong("Phenotype: "),
