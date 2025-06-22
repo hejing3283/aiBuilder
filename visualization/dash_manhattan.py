@@ -1,6 +1,6 @@
 ## pip install -r visualization/requirements.txt
 ## python visualization/dash_manhattan.py
-##Open your web browser and go to http://localhost:8050
+## Open your web browser and go to http://localhost:8050
 ## Upload your DRAGON output file with burden test results
 
 import pandas as pd
@@ -360,9 +360,9 @@ def create_intermediate_data(processed_df):
 
 # Layout
 app.layout = html.Div([
-    html.H1("DRAGON Burden Test Manhattan Plot", 
+    html.H1("DRAGON Burden Test Manhattan Plot",
             style={'textAlign': 'center', 'margin': '20px'}),
-    
+
     # File upload component
     dcc.Upload(
         id='upload-data',
@@ -370,7 +370,7 @@ app.layout = html.Div([
             'Drag and Drop or ',
             html.A('Select DRAGON Output File'),
             html.Br(),
-            html.Span('(Supports .txt, .gz, .zip files)', 
+            html.Span('(Supports .txt, .gz, .zip files)',
                      style={'fontSize': '12px', 'color': '#666'})
         ]),
         style={
@@ -384,7 +384,7 @@ app.layout = html.Div([
             'margin': '10px'
         }
     ),
-    
+
     # Progress indicator
     html.Div([
         dcc.Loading(
@@ -395,11 +395,11 @@ app.layout = html.Div([
             ]
         )
     ]),
-    
+
     # File info display
     html.Div(id='file-info', style={'margin': '10px', 'textAlign': 'center'}),
-    
-    # Reformat button
+
+    # Reformat and Download buttons
     html.Div([
         html.Button(
             "Reformat Data",
@@ -413,25 +413,34 @@ app.layout = html.Div([
                 'borderRadius': '5px',
                 'cursor': 'pointer'
             }
+        ),
+        dcc.Download(id='download-dataframe-csv'),
+        html.Button(
+            "Download Formatted Data",
+            id="btn-download",
+            style={
+                'margin': '10px',
+                'padding': '10px 20px',
+                'backgroundColor': '#4CAF50',
+                'color': 'white',
+                'border': 'none',
+                'borderRadius': '5px',
+                'cursor': 'pointer'
+            }
         )
     ], style={'textAlign': 'center'}),
-    
+
     # Test type selector
     html.Div([
-        html.Label("Select Burden Test Type:"),
+        html.Label("Select Burden Test Type(s):"),
         dcc.Dropdown(
             id='test-type-dropdown',
-            options=[
-                {'label': 'Deleterious Coding', 'value': 'deleterious_coding'},
-                {'label': 'PTV', 'value': 'ptv'},
-                {'label': 'Missense Prioritized', 'value': 'missense_prioritized'},
-                {'label': 'Synonymous', 'value': 'synonymous'}
-            ],
-            value='deleterious_coding',
-            style={'width': '200px'}
+            style={'width': '50%'},
+            placeholder="Upload a file to see options",
+            multi=True
         )
     ], style={'margin': '20px'}),
-    
+
     # Controls
     html.Div([
         html.Div([
@@ -445,7 +454,7 @@ app.layout = html.Div([
                 marks={i: str(i) for i in range(1, 21, 2)}
             )
         ], style={'width': '30%', 'display': 'inline-block', 'margin': '10px'}),
-        
+
         html.Div([
             html.Label("Point Size:"),
             dcc.Slider(
@@ -457,18 +466,18 @@ app.layout = html.Div([
                 marks={i: str(i) for i in range(1, 11)}
             )
         ], style={'width': '30%', 'display': 'inline-block', 'margin': '10px'}),
-        
+
         # Add store for clicked points
         dcc.Store(id='clicked-points', data=[])
     ], style={'margin': '20px'}),
-    
+
     # Main content area with plot and annotation panel
     html.Div([
         # Manhattan plot
         html.Div([
-            html.Div(id='manhattan-container', style={'width': '70%', 'display': 'inline-block'})
+            html.Div(id='manhattan-container', children=html.Div("Please upload a file to see the plot."))
         ], style={'width': '100%', 'marginBottom': '20px'}),
-        
+
         # Annotation panel
         html.Div([
             html.H3("Gene Details", style={'textAlign': 'center'}),
@@ -482,7 +491,7 @@ app.layout = html.Div([
             })
         ])
     ], style={'display': 'flex', 'margin': '20px', 'flexDirection': 'column'}),
-    
+
     # Store for the current data
     dcc.Store(id='processed-data')
 ])
@@ -522,354 +531,232 @@ app.index_string = '''
 </html>
 '''
 
-# Update the callback to include progress updates
+# Callback for file processing
 @callback(
     [Output('processed-data', 'data'),
-     Output('manhattan-container', 'children'),
      Output('file-info', 'children'),
-     Output('progress-status', 'children')],
+     Output('progress-status', 'children'),
+     Output('test-type-dropdown', 'options'),
+     Output('test-type-dropdown', 'value')],
     [Input('upload-data', 'contents'),
+     Input('btn-reformat', 'n_clicks')],
+    [State('upload-data', 'filename')],
+    prevent_initial_call=True
+)
+def process_uploaded_file(contents, n_clicks, filename):
+    ctx = dash.callback_context
+    if not ctx.triggered or contents is None:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+    try:
+        df = read_compressed_file(contents, filename)
+        if df.empty:
+            return None, "Error: Uploaded file is empty", "Error", [], None
+
+        processed_df = process_dragon_output(df)
+        if processed_df.empty:
+            return None, "Error: No valid data after processing", "Error", [], None
+
+        intermediate_df = create_intermediate_data(processed_df)
+        if intermediate_df.empty:
+            return None, "Error: No valid data in intermediate format", "Error", [], None
+
+        test_types_found = intermediate_df['TEST_TYPE'].unique()
+        dropdown_options = [{'label': tt.replace('_', ' ').title(), 'value': tt} for tt in test_types_found]
+        # Default to all test types selected
+        default_test_types = [opt['value'] for opt in dropdown_options]
+        
+        phenotype = intermediate_df['phenotype'].iloc[0] if 'phenotype' in intermediate_df.columns and not intermediate_df['phenotype'].empty else 'N/A'
+        file_info = f"File: {filename} | Genes: {intermediate_df['gene'].nunique():,} | Tests: {len(intermediate_df):,} | Chromosomes: {intermediate_df['chromosome'].nunique()} | Phenotype: {phenotype}"
+        
+        return intermediate_df.to_dict('records'), file_info, "Processing complete!", dropdown_options, default_test_types
+
+    except Exception as e:
+        return None, f"Error processing file: {e}", "Error", [], None
+
+# Callback for updating the plot
+@callback(
+    Output('manhattan-container', 'children'),
+    [Input('processed-data', 'data'),
      Input('threshold-slider', 'value'),
      Input('point-size-slider', 'value'),
      Input('test-type-dropdown', 'value'),
-     Input('clicked-points', 'data'),
-     Input('btn-reformat', 'n_clicks')],
-    [State('upload-data', 'filename')]
+     Input('clicked-points', 'data')]
 )
-def update_plot(contents, threshold, point_size, test_type, clicked_points, n_clicks, filename):
-    if contents is None:
-        return None, html.Div("Please upload a DRAGON output file"), "", ""
+def update_manhattan_plot(processed_data, threshold, point_size, test_types, clicked_points): # test_type is now test_types (plural)
+    if not processed_data or not test_types:
+        return html.Div("Upload a file and select at least one test type to view the plot.")
+
+    intermediate_df = pd.DataFrame(processed_data)
+    # Filter for all selected test types
+    plot_df = intermediate_df[intermediate_df['TEST_TYPE'].isin(test_types)].copy()
     
-    try:
-        # Read and process the file
-        status = "Reading file..."
-        df = read_compressed_file(contents, filename)
-        if df.empty:
-            return None, html.Div("The uploaded file is empty"), "", "Error: Empty file"
-        
-        status = "Processing data..."
-        processed_df = process_dragon_output(df)
-        if processed_df.empty:
-            return None, html.Div("No valid data after processing"), "", "Error: No valid data"
-        
-        # Create intermediate long format
-        intermediate_df = create_intermediate_data(processed_df)
-        if intermediate_df.empty:
-            return None, html.Div("No valid data in intermediate format"), "", "Error: No valid data"
-        
-        status = "Creating plot..."
-        
-        # Create file info message
-        phenotype = intermediate_df['phenotype'].iloc[0] if 'phenotype' in intermediate_df.columns and not intermediate_df['phenotype'].empty else 'N/A'
-        num_genes = intermediate_df['gene'].nunique() if 'gene' in intermediate_df.columns else 0
-        num_tests = len(intermediate_df)
-        num_chroms = intermediate_df['chromosome'].nunique() if 'chromosome' in intermediate_df.columns else 0
+    if plot_df.empty:
+        return html.Div(f"No data available for the selected test type(s).")
 
-        file_info = html.Div([
-            f"File: {filename} | ",
-            f"Genes: {num_genes:,} | ",
-            f"Tests: {num_tests:,} | ",
-            f"Chromosomes: {num_chroms} | ",
-            f"Phenotype: {phenotype}"
-        ])
-        
-        # Filter data for selected test type (already in long format)
-        plot_df = intermediate_df[intermediate_df['TEST_TYPE'] == test_type].copy()
-        
-        if plot_df.empty:
-            return None, html.Div(f"No data available for {test_type}"), file_info, "Error: No data for selected test type"
-        
-        # Create Manhattan plot using Plotly
-        manhattan_plot = go.Figure()
-        
-        # Calculate cumulative positions for each chromosome
-        chrom_positions = {}
-        cumulative_pos = 0
-        for chrom in sorted(plot_df['chromosome'].unique()):
-            chrom_max_pos = plot_df[plot_df['chromosome'] == chrom]['position'].max()
-            if pd.isna(chrom_max_pos):
-                chrom_max_pos = 0
-            chrom_positions[chrom] = cumulative_pos
-            cumulative_pos += chrom_max_pos 
-            if chrom_max_pos > 0:
-                cumulative_pos += 1e7 # A reasonable gap, adjust as needed
+    manhattan_plot = go.Figure()
 
-        # Add points for each chromosome
-        for chrom in sorted(plot_df['chromosome'].unique()):
-            chrom_data = plot_df[plot_df['chromosome'] == chrom].copy()
-            # Add chromosome offset to positions
-            chrom_offset = chrom_positions.get(chrom, 0)
-            x_positions = chrom_data['position'] + chrom_offset
-            
-            # Use log10_p_value for y-axis
-            y_values = chrom_data['log10_p_value']
-            
-            # Create customdata for hover template
-            custom_data = np.column_stack((
-                chrom_data['p_value'],             # 0: raw p-value
-                chrom_data['effect_size'],         # 1: effect_size
-                chrom_data['fdr'],                 # 2: fdr
-                chrom_data['total_variants'],      # 3: total_variants (gene-level)
-                chrom_data['total_carriers'],      # 4: total_carriers (gene-level)
-                chrom_data['test_specific_variants'], # 5: test_specific_variants
-                chrom_data['test_specific_carriers'], # 6: test_specific_carriers
-                chrom_data['chromosome'],           # 7: chromosome
-                chrom_data['position'],             # 8: position
-                chrom_data['phenotype']             # 9: phenotype
-            ))
+    # Calculate cumulative positions for all chromosomes across all selected tests
+    chrom_positions = {}
+    cumulative_pos = 0
+    for chrom in sorted(plot_df['chromosome'].unique()):
+        chrom_max_pos = plot_df[plot_df['chromosome'] == chrom]['position'].max()
+        chrom_positions[chrom] = cumulative_pos
+        cumulative_pos += (chrom_max_pos if pd.notna(chrom_max_pos) else 0) + 1e7
 
-            # Create hover template - uses columns from the long format df
-            hover_template = (
-                "<b>Gene:</b> %{text}<br>" +
-                "<b>Test Type:</b> " + test_type.replace('_', ' ').title() + "<br>" +
-                "<b>Chromosome:</b> %{customdata[7]}<br>" +
-                "<b>Position:</b> %{customdata[8]:,.0f}<br>" +
-                "<b>Phenotype:</b> %{customdata[9]}<br>" +
-                "<b>P-value:</b> %{customdata[0]:.2e}<br>" +
-                "<b>Effect Size:</b> %{customdata[1]:.3f}<br>" +
-                "<b>FDR:</b> %{customdata[2]:.2e}<br>" +
-                "<b>Total Variants (Gene):</b> %{customdata[3]:,}<br>" +
-                "<b>Total Carriers (Gene):</b> %{customdata[4]:,}<br>" +
-                "<b>Test-specific Variants:</b> %{customdata[5]:,}<br>" +
-                "<b>Test-specific Carriers:</b> %{customdata[6]:,}<br>" +
-                "<extra></extra>"
+    # Plot each selected test type as a separate trace for the legend
+    for test_type in test_types:
+        test_type_df = plot_df[plot_df['TEST_TYPE'] == test_type]
+        if test_type_df.empty:
+            continue
+
+        x_positions = test_type_df.apply(lambda row: row['position'] + chrom_positions.get(row['chromosome'], 0), axis=1)
+        symbols = test_type_df['effect_size'].apply(lambda es: 'triangle-up' if es > 1 else ('triangle-down' if es < 1 else 'circle')).tolist()
+        
+        # Use the previous chromosome-based color scheme
+        point_colors = test_type_df['chromosome'].apply(lambda c: 'skyblue' if c % 2 == 0 else 'royalblue').tolist()
+        
+        custom_data = np.column_stack((
+            test_type_df['p_value'], test_type_df['effect_size'], test_type_df['fdr'],
+            test_type_df['total_variants'], test_type_df['total_carriers'],
+            test_type_df['test_specific_variants'], test_type_df['test_specific_carriers'],
+            test_type_df['chromosome'], test_type_df['position'], test_type_df['phenotype']
+        ))
+        
+        hover_template = "<b>Gene:</b> %{text}<br><b>Test Type:</b> " + test_type.replace('_', ' ').title() + "<br><b>P-value:</b> %{customdata[0]:.2e}<br><b>Effect Size:</b> %{customdata[1]:.3f}<extra></extra>"
+
+        manhattan_plot.add_trace(go.Scatter(
+            x=x_positions, y=test_type_df['log10_p_value'], mode='markers',
+            name=test_type.replace('_', ' ').title(), # Name for the legend
+            text=test_type_df['gene'], customdata=custom_data, hovertemplate=hover_template,
+            marker=dict(
+                size=point_size,
+                color=point_colors,
+                symbol=symbols
             )
-            
-            # Add main scatter plot
+        ))
+
+    # Add labels for significant points from all selected tests
+    significant_points = plot_df[plot_df['log10_p_value'] >= threshold]
+    if not significant_points.empty:
+        sig_x_pos = significant_points.apply(lambda row: row['position'] + chrom_positions.get(row['chromosome'], 0), axis=1)
+        manhattan_plot.add_trace(go.Scatter(
+            x=sig_x_pos, y=significant_points['log10_p_value'],
+            mode='text', text=significant_points['gene'], textposition="top center",
+            textfont=dict(size=10), showlegend=False, hoverinfo='none'
+        ))
+
+    # Add labels for clicked points from all selected tests
+    if clicked_points:
+        clicked_data = plot_df[plot_df['gene'].isin(clicked_points)]
+        if not clicked_data.empty:
+            clicked_x_pos = clicked_data.apply(lambda row: row['position'] + chrom_positions.get(row['chromosome'], 0), axis=1)
             manhattan_plot.add_trace(go.Scatter(
-                x=x_positions,
-                y=y_values, 
-                mode='markers',
-                name=f'Chr{chrom}',
-                text=chrom_data['gene'],
-                customdata=custom_data,
-                marker=dict(
-                    size=point_size,
-                    color='skyblue' if chrom % 2 == 0 else 'royalblue'
-                ),
-                hovertemplate=hover_template
+                x=clicked_x_pos, y=clicked_data['log10_p_value'],
+                mode='text', text=clicked_data['gene'], textposition="top center",
+                textfont=dict(size=10), showlegend=False, hoverinfo='none'
             ))
-            
-            # Add labels for significant points
-            significant_points = chrom_data[chrom_data['log10_p_value'] >= threshold].copy()
-            if not significant_points.empty:
-                manhattan_plot.add_trace(go.Scatter(
-                    x=significant_points['position'] + chrom_offset,
-                    y=significant_points['log10_p_value'],
-                    mode='markers+text',
-                    text=significant_points['gene'],
-                    textposition="top center",
-                    textfont=dict(size=10),
-                    marker=dict(size=0),
-                    showlegend=False,
-                    hoverinfo='skip'
-                ))
-            
-            # Add labels for clicked points
-            if clicked_points:
-                clicked_data = chrom_data[chrom_data['gene'].isin(clicked_points)].copy()
-                if not clicked_data.empty:
-                    manhattan_plot.add_trace(go.Scatter(
-                        x=clicked_data['position'] + chrom_offset,
-                        y=clicked_data['log10_p_value'],
-                        mode='markers+text',
-                        text=clicked_data['gene'],
-                        textposition="top center",
-                        textfont=dict(size=10),
-                        marker=dict(size=0),
-                        showlegend=False,
-                        hoverinfo='skip'
-                    ))
-        
-        # Add significance lines
-        manhattan_plot.add_hline(
-            y=threshold,
-            line_dash="dash",
-            line_color="red"
-        )
-        manhattan_plot.add_hline(
-            y=threshold - 1,
-            line_dash="dash",
-            line_color="blue"
-        )
-        
-        # Update layout
-        manhattan_plot.update_layout(
-            title=f"Manhattan Plot - {test_type.replace('_', ' ').title()} Burden Test",
-            xaxis_title="Genomic Position",
-            yaxis_title="-log10(p-value)",
-            showlegend=False,
-            hovermode='closest',
-            plot_bgcolor='white',
-            paper_bgcolor='white',
-            width=1200,
-            height=600,
-            margin=dict(l=50, r=50, t=50, b=50),
-            xaxis=dict(
-                showgrid=False,
-                zeroline=False,
-                showline=True,
-                linewidth=1,
-                linecolor='black'
-            ),
-            yaxis=dict(
-                showgrid=False,
-                zeroline=False,
-                showline=True,
-                linewidth=1,
-                linecolor='black'
-            )
-        )
-        
-        # Add chromosome labels
-        x_ticks = []
-        x_labels = []
-        unique_chroms_in_plot_df = sorted(plot_df['chromosome'].unique())
-        for chrom in unique_chroms_in_plot_df:
-            if chrom in chrom_positions:
-                chrom_data_for_mean = plot_df[plot_df['chromosome'] == chrom]['position']
-                if not chrom_data_for_mean.empty:
-                    x_ticks.append(chrom_positions[chrom] + chrom_data_for_mean.mean())
-                    x_labels.append(str(chrom))
-        
-        manhattan_plot.update_xaxes(
-            ticktext=x_labels,
-            tickvals=x_ticks,
-            tickangle=0
-        )
-        
-        return intermediate_df.to_dict('records'), html.Div([
-            dcc.Graph(
-                figure=manhattan_plot,
-                id='manhattan-graph',
-                style={'width': '100%', 'display': 'flex', 'justifyContent': 'center'}
-            )
-        ], style={'width': '100%', 'display': 'flex', 'justifyContent': 'center'}), file_info, "Upload complete!"
-    
-    except Exception as e:
-        error_message = f'Error processing file: {str(e)}'
-        return None, html.Div(error_message), html.Div(error_message, style={'color': 'red'}), f"Error: {str(e)}"
 
-# Update the callback for annotation panel
+    manhattan_plot.add_hline(y=threshold, line_dash="dash", line_color="red")
+    manhattan_plot.update_layout(
+        title=f"Manhattan Plot",
+        xaxis_title="Genomic Position", yaxis_title="-log10(p-value)",
+        showlegend=True, hovermode='closest', plot_bgcolor='white', paper_bgcolor='white',
+        width=1200, height=600, margin=dict(l=50, r=50, t=50, b=50),
+        xaxis=dict(
+            tickvals=[chrom_positions[c] + plot_df[plot_df['chromosome']==c]['position'].mean() for c in sorted(plot_df['chromosome'].unique()) if not plot_df[plot_df['chromosome']==c].empty],
+            ticktext=[str(c) for c in sorted(plot_df['chromosome'].unique()) if not plot_df[plot_df['chromosome']==c].empty]
+        )
+    )
+    
+    return dcc.Graph(figure=manhattan_plot, id='manhattan-graph')
+
 @callback(
     Output('annotation-panel', 'children'),
-    [Input('manhattan-graph', 'hoverData'),
-     Input('processed-data', 'data'),
-     Input('test-type-dropdown', 'value')]
+    [Input('manhattan-graph', 'hoverData')],
+    [State('processed-data', 'data'),
+     State('test-type-dropdown', 'value')]
 )
 def update_annotation_panel(hover_data, processed_data, test_type):
-    if not hover_data or not processed_data:
+    if not hover_data or not processed_data or not test_type:
         return html.Div()
     
-    try:
-        # Get the hovered point data
-        point = hover_data.get('points', [{}])[0]
-        if not point:
-            return html.Div()
-            
-        # Get gene name from text field
-        gene_name = point.get('text', '')
-        if not gene_name:
-            return html.Div()
-        
-        # The processed_data is now the intermediate long format
-        # Filter by gene and TEST_TYPE to get the specific row
-        gene_data = None
-        for item in processed_data:
-            if item.get('gene') == gene_name and item.get('TEST_TYPE') == test_type:
-                gene_data = item
-                break
-                
-        if not gene_data:
-            return html.Div()
-        
-        # Create annotation panel content
-        annotation_content = [
-            html.H4("Gene Details"),
-            html.Div([
-                html.Strong("Gene: "), html.Span(str(gene_data.get('gene', 'N/A'))),
-                html.Br(),
-                html.Strong("Chromosome: "), html.Span(str(gene_data.get('chromosome', 'N/A'))),
-                html.Br(),
-                html.Strong("Position: "), html.Span(str(gene_data.get('position', 'N/A'))),
-                html.Br(),
-                html.Strong(f"{test_type.replace('_', ' ').title()} Burden Test:"),
-                html.Br(),
-                html.Strong("P-value: "), 
-                html.Span(f"{gene_data.get('p_value', 0):.2e}"), 
-                html.Br(),
-                html.Strong("Effect Size: "), 
-                html.Span(f"{gene_data.get('effect_size', 0):.3f}"),
-                html.Br(),
-                html.Strong("FDR: "), 
-                html.Span(f"{gene_data.get('fdr', 1):.2e}"),
-                html.Br(),
-                html.Strong("Total Variants (Gene): "), 
-                html.Span(str(gene_data.get('total_variants', 0))),
-                html.Br(),
-                html.Strong("Total Carriers (Gene): "), 
-                html.Span(str(gene_data.get('total_carriers', 0))),
-                html.Br(),
-                html.Strong("Test-specific Variants: "), 
-                html.Span(str(gene_data.get('test_specific_variants', 0))),
-                html.Br(),
-                html.Strong("Test-specific Carriers: "), 
-                html.Span(str(gene_data.get('test_specific_carriers', 0)))
-            ])
-        ]
-        
-        # Add variant IDs if available
-        if gene_data.get('test_specific_variant_ids'):
+    gene_name = hover_data['points'][0]['text']
+    gene_data = next((item for item in processed_data if item.get('gene') == gene_name and item.get('TEST_TYPE') == test_type), None)
+    
+    if not gene_data:
+        return html.Div(f"No details found for {gene_name} with test type {test_type}")
+
+    annotation_content = [
+        html.H4("Gene Details"),
+        html.Div([
+            html.Strong("Gene: "), html.Span(str(gene_data.get('gene', 'N/A'))), html.Br(),
+            html.Strong("Chromosome: "), html.Span(str(gene_data.get('chromosome', 'N/A'))), html.Br(),
+            html.Strong("Position: "), html.Span(str(gene_data.get('position', 'N/A'))), html.Br(),
+            html.Strong(f"{test_type.replace('_', ' ').title()} Burden Test:"), html.Br(),
+            html.Strong("P-value: "), html.Span(f"{gene_data.get('p_value', 0):.2e}"), html.Br(),
+            html.Strong("Effect Size: "), html.Span(f"{gene_data.get('effect_size', 0):.3f}"), html.Br(),
+            html.Strong("FDR: "), html.Span(f"{gene_data.get('fdr', 1):.2e}"), html.Br(),
+            html.Strong("Total Variants (Gene): "), html.Span(str(gene_data.get('total_variants', 0))), html.Br(),
+            html.Strong("Total Carriers (Gene): "), html.Span(str(gene_data.get('total_carriers', 0))), html.Br(),
+            html.Strong("Test-specific Variants: "), html.Span(str(gene_data.get('test_specific_variants', 0))), html.Br(),
+            html.Strong("Test-specific Carriers: "), html.Span(str(gene_data.get('test_specific_carriers', 0)))
+        ])
+    ]
+
+    # Add variant IDs if available
+    variant_ids_key = 'test_specific_variant_ids'
+    if variant_ids_key in gene_data and gene_data[variant_ids_key] and pd.notna(gene_data[variant_ids_key]):
+        variant_ids = str(gene_data[variant_ids_key]).split(',')
+        variant_list = []
+        for var_id in variant_ids:
             try:
-                variant_ids = str(gene_data['test_specific_variant_ids']).split(',')
-                variant_list = []
-                for var_id in variant_ids:
-                    try:
-                        chrom, pos, ref, alt = var_id.split(':')
-                        variant_list.append(f"{chrom}:{pos} {ref}→{alt}")
-                    except ValueError:
-                        variant_list.append(var_id)
-                
-                if variant_list:
-                    annotation_content.append(html.Div([
-                        html.Br(),
-                        html.Strong("Variants: "),
-                        html.Br(),
-                        html.Div([
-                            html.Span(var) for var in variant_list
-                        ], style={'marginLeft': '20px'})
-                    ]))
-            except Exception as e:
-                print(f"Error processing variants in annotation panel: {str(e)}")
+                chrom, pos, ref, alt = var_id.split(':')
+                variant_list.append(f"{chrom}:{pos} {ref}→{alt}")
+            except (ValueError, IndexError):
+                variant_list.append(var_id)
         
-        # Add phenotype information if available
-        if gene_data.get('phenotype'):
+        if variant_list:
             annotation_content.append(html.Div([
                 html.Br(),
-                html.Strong("Phenotype: "),
-                html.Span(str(gene_data['phenotype']))
+                html.Strong("Variants: "), html.Br(),
+                html.Div([html.Span(var, style={'display': 'block'}) for var in variant_list], style={'marginLeft': '20px'})
             ]))
-        
-        return html.Div(annotation_content)
-    
-    except Exception as e:
-        print(f"Error in annotation panel: {str(e)}")
-        return html.Div()
 
-# Add callback for clicked points
+    # Add phenotype information if available
+    if 'phenotype' in gene_data and gene_data['phenotype']:
+        annotation_content.append(html.Div([
+            html.Br(),
+            html.Strong("Phenotype: "),
+            html.Span(str(gene_data['phenotype']))
+        ]))
+    
+    return html.Div(annotation_content)
+
 @callback(
     Output('clicked-points', 'data'),
     [Input('manhattan-graph', 'clickData')],
     [State('clicked-points', 'data')]
 )
 def update_clicked_points(click_data, current_clicked):
-    if click_data is None:
-        return current_clicked
-    
-    clicked_gene = click_data['points'][0]['text']
-    if clicked_gene not in current_clicked:
-        current_clicked.append(clicked_gene)
+    if click_data:
+        clicked_gene = click_data['points'][0]['text']
+        if clicked_gene not in current_clicked:
+            current_clicked.append(clicked_gene)
     return current_clicked
+
+@callback(
+    Output("download-dataframe-csv", "data"),
+    [Input("btn-download", "n_clicks")],
+    [State('processed-data', 'data')],
+    prevent_initial_call=True,
+)
+def download_data(n_clicks, processed_data):
+    if n_clicks is None or not processed_data:
+        return dash.no_update
+    
+    df_to_download = pd.DataFrame(processed_data)
+    return dcc.send_data_frame(df_to_download.to_csv, "dragon_burden_results_long_format.csv", index=False)
 
 # Run the app
 if __name__ == '__main__':
