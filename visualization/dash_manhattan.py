@@ -166,6 +166,19 @@ def process_dragon_output(df):
             processed_df[f'{test_type}_carriers'] = df[carriers_col_raw].fillna(0)
             print(f"  - Processed n_carriers for {test_type}")
 
+        # Add case/control carriers
+        carriers_case_col_raw = burden_data[test_type].get('n_carriers_case')
+        print(f"  - Looking for case carriers column: {test_type}/burden_test/n_carriers_case -> Found: {carriers_case_col_raw}")
+        if carriers_case_col_raw and carriers_case_col_raw in df.columns:
+            processed_df[f'{test_type}_n_carriers_case'] = df[carriers_case_col_raw].fillna(0)
+            print(f"    - Processed n_carriers_case for {test_type}")
+
+        carriers_control_col_raw = burden_data[test_type].get('n_carriers_control')
+        print(f"  - Looking for control carriers column: {test_type}/burden_test/n_carriers_control -> Found: {carriers_control_col_raw}")
+        if carriers_control_col_raw and carriers_control_col_raw in df.columns:
+            processed_df[f'{test_type}_n_carriers_control'] = df[carriers_control_col_raw].fillna(0)
+            print(f"    - Processed n_carriers_control for {test_type}")
+
         # Number of variants
         variants_col_raw = burden_data[test_type].get('n_variants')
         if variants_col_raw and variants_col_raw in df.columns:
@@ -214,7 +227,8 @@ def create_intermediate_data(processed_df):
     # These are the columns that will be melted
     burden_stat_suffixes = [
         '_raw_pval', '_pval', '_beta', '_fdr', 
-        '_carriers', '_variants', '_variant_ids'
+        '_carriers', '_variants', '_variant_ids',
+        '_n_carriers_case', '_n_carriers_control'
     ]
     
     # Dynamically find columns to melt
@@ -278,7 +292,9 @@ def create_intermediate_data(processed_df):
         'carriers': 'test_specific_carriers',
         'variants': 'test_specific_variants',
         'variant_ids': 'test_specific_variant_ids',
-        'pval': 'log10_p_value' # The -log10 transformed p-value
+        'pval': 'log10_p_value', # The -log10 transformed p-value
+        'n_carriers_case': 'carriers_case',
+        'n_carriers_control': 'carriers_control'
     }, inplace=True)
     
     # --- Calculate gene_common_info and merge ---    
@@ -338,12 +354,15 @@ def create_intermediate_data(processed_df):
         'gene', 'chromosome', 'position', 'phenotype', 'TEST_TYPE',
         'p_value', 'log10_p_value', 'effect_size', 'fdr', 
         'total_variants', 'total_carriers', 'all_variant_ids',
-        'test_specific_carriers', 'test_specific_variants', 'test_specific_variant_ids'
+        'test_specific_carriers', 'carriers_case', 'carriers_control',
+        'test_specific_variants', 'test_specific_variant_ids'
     ]
     
     # Ensure all columns in column_order exist before reordering
     existing_columns = [col for col in column_order if col in final_data_long.columns]
     final_data_long = final_data_long[existing_columns]
+
+    print("\nColumns in final reformatted data:", final_data_long.columns.tolist())
 
     # Save intermediate data to file for inspection
     try:
@@ -453,23 +472,11 @@ app.layout = html.Div([
                 value=5,
                 marks={i: str(i) for i in range(1, 21, 2)}
             )
-        ], style={'width': '30%', 'display': 'inline-block', 'margin': '10px'}),
-
-        html.Div([
-            html.Label("Point Size:"),
-            dcc.Slider(
-                id='point-size-slider',
-                min=1,
-                max=10,
-                step=0.5,
-                value=5,
-                marks={i: str(i) for i in range(1, 11)}
-            )
-        ], style={'width': '30%', 'display': 'inline-block', 'margin': '10px'}),
-
+        ], style={'width': '45%', 'display': 'inline-block', 'margin': '10px'}),
+        
         # Add store for clicked points
         dcc.Store(id='clicked-points', data=[])
-    ], style={'margin': '20px'}),
+    ], style={'textAlign': 'center', 'margin': '20px'}),
 
     # Main content area with plot and annotation panel
     html.Div([
@@ -579,11 +586,10 @@ def process_uploaded_file(contents, n_clicks, filename):
     Output('manhattan-container', 'children'),
     [Input('processed-data', 'data'),
      Input('threshold-slider', 'value'),
-     Input('point-size-slider', 'value'),
      Input('test-type-dropdown', 'value'),
      Input('clicked-points', 'data')]
 )
-def update_manhattan_plot(processed_data, threshold, point_size, test_types, clicked_points): # test_type is now test_types (plural)
+def update_manhattan_plot(processed_data, threshold, test_types, clicked_points): # test_type is now test_types (plural)
     if not processed_data or not test_types:
         return html.Div("Upload a file and select at least one test type to view the plot.")
 
@@ -630,7 +636,7 @@ def update_manhattan_plot(processed_data, threshold, point_size, test_types, cli
             name=test_type.replace('_', ' ').title(), # Name for the legend
             text=test_type_df['gene'], customdata=custom_data, hovertemplate=hover_template,
             marker=dict(
-                size=point_size,
+                size=8, # Increased default point size
                 color=point_colors,
                 symbol=symbols
             )
@@ -687,21 +693,35 @@ def update_annotation_panel(hover_data, processed_data, test_type):
     if not gene_data:
         return html.Div(f"No details found for {gene_name} with test type {test_type}")
 
+    print(f"\nAnnotation panel data for {gene_name} ({test_type}):\n{gene_data}\n")
+
+    details_children = [
+        html.Strong("Gene: "), html.Span(str(gene_data.get('gene', 'N/A'))), html.Br(),
+        html.Strong("Chromosome: "), html.Span(str(gene_data.get('chromosome', 'N/A'))), html.Br(),
+        html.Strong("Position: "), html.Span(str(gene_data.get('position', 'N/A'))), html.Br(),
+        html.Strong(f"{test_type.replace('_', ' ').title()} Burden Test:"), html.Br(),
+        html.Strong("P-value: "), html.Span(f"{gene_data.get('p_value', 0):.2e}"), html.Br(),
+        html.Strong("Effect Size: "), html.Span(f"{gene_data.get('effect_size', 0):.3f}"), html.Br(),
+        html.Strong("FDR: "), html.Span(f"{gene_data.get('fdr', 1):.2e}"), html.Br(),
+        html.Strong("Total Variants (Gene): "), html.Span(str(gene_data.get('total_variants', 0))), html.Br(),
+        html.Strong("Total Carriers (Gene): "), html.Span(str(gene_data.get('total_carriers', 0))), html.Br(),
+        html.Strong("Test-specific Variants: "), html.Span(str(gene_data.get('test_specific_variants', 0))), html.Br(),
+        html.Strong("Test-specific Carriers: "), html.Span(str(gene_data.get('test_specific_carriers', 0))),
+    ]
+
+    # Conditionally add case/control carriers
+    if 'carriers_case' in gene_data and pd.notna(gene_data['carriers_case']):
+        details_children.append(
+            html.Div([html.Strong("Case Carriers: "), html.Span(f"{int(gene_data.get('carriers_case', 0))}")], style={'marginLeft': '15px'})
+        )
+    if 'carriers_control' in gene_data and pd.notna(gene_data['carriers_control']):
+        details_children.append(
+            html.Div([html.Strong("Control Carriers: "), html.Span(f"{int(gene_data.get('carriers_control', 0))}")], style={'marginLeft': '15px'})
+        )
+
     annotation_content = [
         html.H4("Gene Details"),
-        html.Div([
-            html.Strong("Gene: "), html.Span(str(gene_data.get('gene', 'N/A'))), html.Br(),
-            html.Strong("Chromosome: "), html.Span(str(gene_data.get('chromosome', 'N/A'))), html.Br(),
-            html.Strong("Position: "), html.Span(str(gene_data.get('position', 'N/A'))), html.Br(),
-            html.Strong(f"{test_type.replace('_', ' ').title()} Burden Test:"), html.Br(),
-            html.Strong("P-value: "), html.Span(f"{gene_data.get('p_value', 0):.2e}"), html.Br(),
-            html.Strong("Effect Size: "), html.Span(f"{gene_data.get('effect_size', 0):.3f}"), html.Br(),
-            html.Strong("FDR: "), html.Span(f"{gene_data.get('fdr', 1):.2e}"), html.Br(),
-            html.Strong("Total Variants (Gene): "), html.Span(str(gene_data.get('total_variants', 0))), html.Br(),
-            html.Strong("Total Carriers (Gene): "), html.Span(str(gene_data.get('total_carriers', 0))), html.Br(),
-            html.Strong("Test-specific Variants: "), html.Span(str(gene_data.get('test_specific_variants', 0))), html.Br(),
-            html.Strong("Test-specific Carriers: "), html.Span(str(gene_data.get('test_specific_carriers', 0)))
-        ])
+        html.Div(details_children)
     ]
 
     # Add variant IDs if available
