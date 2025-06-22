@@ -1,3 +1,4 @@
 biopython
 pandas
-requests 
+requests
+kaleido 
