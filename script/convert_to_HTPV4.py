@@ -38,20 +38,17 @@ def get_phenotype_column(df):
         return last_col
     return None
 
-def convert_to_htpv4(df, phenotype_col):
+def convert_to_gene_summary(df, phenotype_col):
     """
-    Convert the DRAGON output DataFrame to the HTPV4 format.
-    The HTPV4 format typically includes: ID, chromosome, position, allele1, allele2, and phenotypes.
+    Convert the DRAGON output DataFrame to a per-gene summary.
     """
-    print("Converting to HTPV4 format...")
+    print("Converting to per-gene summary format...")
     
-    # Check for required columns
     if 'gene_name' not in df.columns:
         raise ValueError("Input file is missing the required 'gene_name' column.")
     
-    all_variants_data = []
+    all_genes_data = []
 
-    # Dynamically find all variant_ids columns
     variant_id_cols = [col for col in df.columns if col.endswith('/burden_test/variant_ids')]
     if not variant_id_cols:
         raise ValueError("No '/burden_test/variant_ids' columns found in the input file.")
@@ -60,79 +57,90 @@ def convert_to_htpv4(df, phenotype_col):
 
     for index, row in df.iterrows():
         gene_name = row['gene_name']
-        phenotype_values = row[phenotype_col] if phenotype_col and phenotype_col in row else 'NA'
+        chrom = row.get('CHROM', 'NA')
+        phenotype_values = row.get(phenotype_col, 'NA') if phenotype_col else 'NA'
 
-        # Use a set to store unique variants for this gene
         variants_for_gene = set()
-
         for col_name in variant_id_cols:
             if pd.notna(row[col_name]):
                 variants = str(row[col_name]).split(',')
                 variants_for_gene.update(variants)
         
-        for var_id in variants_for_gene:
-            try:
-                # Format: "chromosome:position:reference:alternative"
-                parts = var_id.split(':')
-                if len(parts) == 4:
-                    chrom, pos, ref, alt = parts
-                    
-                    # Create an entry for the HTPV4 format
-                    variant_entry = {
-                        'ID': var_id,
-                        'chromosome': chrom,
-                        'position': pos,
-                        'allele1': ref,
-                        'allele2': alt,
-                        phenotype_col: phenotype_values if phenotype_col else 'NA'
-                    }
-                    all_variants_data.append(variant_entry)
-            except ValueError:
-                print(f"Warning: Skipping malformed variant ID '{var_id}' for gene '{gene_name}'.")
-                continue
+        if variants_for_gene:
+            gene_entry = {
+                'gene_name': gene_name,
+                'chromosome': chrom,
+                'variants': ','.join(sorted(list(variants_for_gene)))
+            }
+            if phenotype_col:
+                gene_entry[phenotype_col] = phenotype_values
+            all_genes_data.append(gene_entry)
 
-    if not all_variants_data:
-        print("Warning: No valid variants were found to convert.")
+    if not all_genes_data:
+        print("Warning: No valid genes with variants were found to convert.")
         return pd.DataFrame()
 
-    htpv4_df = pd.DataFrame(all_variants_data)
+    gene_df = pd.DataFrame(all_genes_data)
 
-    # Reorder columns to have phenotype last
-    cols = ['ID', 'chromosome', 'position', 'allele1', 'allele2']
+    cols = ['gene_name', 'chromosome']
     if phenotype_col:
         cols.append(phenotype_col)
+    cols.append('variants')
     
-    htpv4_df = htpv4_df[cols]
+    gene_df = gene_df[cols]
     
-    print(f"Successfully converted {len(htpv4_df)} variants to HTPV4 format.")
-    return htpv4_df
+    print(f"Successfully converted {len(gene_df)} genes.")
+    return gene_df
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert DRAGON output files to REGENIE HTPV4 format.")
+    parser = argparse.ArgumentParser(
+        description="Convert DRAGON output files to a per-gene summary file.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Example usage:
+  python %(prog)s --input your_dragon_output.txt.gz --output your_gene_summary.tsv
+"""
+    )
     parser.add_argument("--input", "-i", required=True, help="Path to the input DRAGON output file (can be .txt, .gz, or .zip).")
-    parser.add_argument("--output", "-o", required=True, help="Path to the output HTPV4 formatted file.")
+    parser.add_argument("--output", "-o", help="Path to the output per-gene summary file. Defaults to the input filename with a .htpv4.tsv extension.")
     
     args = parser.parse_args()
 
+    output_path = args.output
+    if not output_path:
+        input_path = args.input
+        # Create a default output path in the same directory as the input
+        dirname = os.path.dirname(input_path)
+        basename = os.path.basename(input_path)
+        
+        # Remove known extensions to get the base filename
+        if basename.endswith('.gz'):
+            basename = basename[:-3]
+        elif basename.endswith('.zip'):
+            basename = basename[:-4]
+        
+        if basename.endswith('.txt') or basename.endswith('.tsv'):
+            basename = os.path.splitext(basename)[0]
+            
+        output_filename = basename + '.htpv4.tsv'
+        output_path = os.path.join(dirname, output_filename)
+        print(f"Output path not specified. Defaulting to: {output_path}")
+
     try:
-        # Read the input file
         print(f"Reading input file: {args.input}")
         dragon_df = read_dragon_output(args.input)
         
-        # Identify the phenotype column
         phenotype_col_name = get_phenotype_column(dragon_df)
         if phenotype_col_name:
             print(f"Identified phenotype column: '{phenotype_col_name}'")
         else:
-            print("No distinct phenotype column identified. Phenotype data will be 'NA'.")
+            print("No distinct phenotype column identified.")
 
-        # Convert to HTPV4 format
-        htpv4_df = convert_to_htpv4(dragon_df, phenotype_col_name)
+        gene_summary_df = convert_to_gene_summary(dragon_df, phenotype_col_name)
 
-        # Save the output file
-        if not htpv4_df.empty:
-            htpv4_df.to_csv(args.output, sep=' ', index=False)
-            print(f"Successfully saved HTPV4 formatted data to: {args.output}")
+        if not gene_summary_df.empty:
+            gene_summary_df.to_csv(output_path, sep='\t', index=False)
+            print(f"Successfully saved per-gene summary data to: {output_path}")
 
     except (FileNotFoundError, ValueError) as e:
         print(str(e))
