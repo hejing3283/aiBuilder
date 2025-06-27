@@ -252,4 +252,5 @@ dependencies:
       - tqdm==4.67.1
       - werkzeug==3.0.6
   - forestplot=0.4.1
+  - kaleido
 prefix: /opt/miniconda3/envs/aib
